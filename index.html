@@ -1,0 +1,168 @@
+
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>POLYGON AI</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+</head>
+<body>
+
+<div class="app">
+
+  <header class="header">
+    <div class="brand">
+      <div class="brand-logo">P</div>
+      <div>
+        <h1>POLYGON <span>AI</span></h1>
+        <p>OBJECT DETECTION & SEGMENTATION</p>
+      </div>
+    </div>
+
+    <div class="system-status">
+      <span class="status-dot"></span>
+      <span id="status">กำลังโหลดโมเดล...</span>
+    </div>
+  </header>
+
+  <main>
+
+    <section class="welcome">
+      <div>
+        <div class="tag">AI VISION SYSTEM</div>
+        <h2>POLYGON AI <span>DETECTION</span></h2>
+        <p>ระบบตรวจจับวัตถุและแบ่งพื้นที่ด้วยเทคโนโลยี YOLO26</p>
+      </div>
+      <div class="version">YOLO26N-SEG <b>640 × 640</b></div>
+    </section>
+
+    <section class="class-section">
+      <div class="section-heading">
+        <h3>OBJECT CLASSES</h3>
+        <span>5 CLASSES AVAILABLE</span>
+      </div>
+
+      <div class="class-grid">
+        <div class="class-card">
+          <div class="class-icon bottle">B</div>
+          <div><b>Bottle</b><small>Class 01</small></div>
+        </div>
+
+        <div class="class-card">
+          <div class="class-icon dog">D</div>
+          <div><b>Dog</b><small>Class 02</small></div>
+        </div>
+
+        <div class="class-card">
+          <div class="class-icon glass">G</div>
+          <div><b>Glass Bottle</b><small>Class 03</small></div>
+        </div>
+
+        <div class="class-card">
+          <div class="class-icon goat">G</div>
+          <div><b>Goat</b><small>Class 04</small></div>
+        </div>
+
+        <div class="class-card">
+          <div class="class-icon monkey">M</div>
+          <div><b>Monkey</b><small>Class 05</small></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="workspace">
+
+      <div class="panel">
+        <div class="panel-heading">
+          <div>
+            <span class="number">01</span>
+            <h3>INPUT IMAGE</h3>
+          </div>
+          <span class="panel-label">ORIGINAL</span>
+        </div>
+
+        <label class="upload-area" for="fileInput">
+          <input type="file" id="fileInput" accept="image/*">
+          <div class="upload-symbol">＋</div>
+          <h4>อัปโหลดรูปภาพ</h4>
+          <p>คลิกเพื่อเลือกรูปภาพ หรือลากไฟล์มาวาง</p>
+          <small>รองรับ JPG · PNG · WEBP</small>
+        </label>
+
+        <label class="camera-button" for="cameraInput">
+          <span>📷</span> ถ่ายภาพจากกล้อง
+          <input type="file" id="cameraInput"
+                 accept="image/*" capture="environment">
+        </label>
+
+        <div class="preview-area">
+          <div class="preview-title">IMAGE PREVIEW</div>
+          <img id="preview" hidden alt="ภาพต้นฉบับ">
+          <div id="previewEmpty">ยังไม่มีภาพต้นฉบับ</div>
+        </div>
+
+        <button id="detectBtn" disabled>
+          <span>✦</span> START DETECTION
+        </button>
+      </div>
+
+      <div class="panel">
+        <div class="panel-heading">
+          <div>
+            <span class="number">02</span>
+            <h3>AI RESULT</h3>
+          </div>
+          <span class="panel-label result-label">SEGMENTATION</span>
+        </div>
+
+        <div class="result-area">
+          <canvas id="resultCanvas"></canvas>
+          <div id="empty">
+            <div class="empty-symbol">◎</div>
+            <h4>WAITING FOR RESULT</h4>
+            <p>ผลการตรวจจับจะแสดงที่นี่</p>
+          </div>
+        </div>
+
+        <div class="result-message">
+          <span class="status-dot"></span>
+          <span id="message">ยังไม่มีผลการตรวจจับ</span>
+        </div>
+      </div>
+
+    </section>
+
+    <section class="panel statistics">
+      <div class="panel-heading">
+        <div>
+          <span class="number">03</span>
+          <h3>DETECTION SUMMARY</h3>
+        </div>
+        <span class="panel-label">STATISTICS</span>
+      </div>
+
+      <div id="classCounts" class="class-counts"></div>
+
+      <div class="detection-heading">
+        <h4>DETECTED OBJECTS</h4>
+        <span>CONFIDENCE SCORE</span>
+      </div>
+
+      <div id="detections">
+        <p class="no-detection">ยังไม่มีรายการวัตถุ</p>
+      </div>
+    </section>
+
+  </main>
+
+  <footer>
+    <span>POLYGON AI</span> · YOLO26 SEGMENTATION SYSTEM
+  </footer>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
