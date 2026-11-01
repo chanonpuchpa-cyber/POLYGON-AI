@@ -1,4 +1,3 @@
-
 const MODEL_PATH = "./models/best.onnx";
 
 const IMAGE_SIZE = 640;
@@ -6,8 +5,14 @@ const NUM_CLASSES = 5;
 const NUM_MASKS = 32;
 const PROTO_SIZE = 160;
 
-const CONFIDENCE = 0.25;
-const IOU_THRESHOLD = 0.45;
+const CONFIDENCE = 0.20;
+const IOU_THRESHOLD = 0.45;       // ตัดผลซ้ำของคลาสเดียวกัน
+const CROSS_CLASS_IOU = 0.65;     // ถ้าวัตถุเดียวกันถูกทายเป็นคนละคลาส ให้เก็บอันที่มั่นใจสุด
+
+// ----- ตั้งค่าการแสดงผล -----
+const DEBUG = true;               // แสดงคะแนนสูงสุดของแต่ละคลาส (ไว้ดูว่าโมเดลเห็นขวดไหม) ปิดเมื่อใช้งานจริง
+const FILL_ALPHA = 0;             // 0 = เส้นขอบอย่างเดียว, 0.12-0.25 = ใส่สีจางๆ ทับวัตถุ
+const SHOW_LABEL = true;          // ป้ายชื่อ + % ที่จุดบนสุดของวัตถุ
 
 const CLASS_NAMES = [
   "Bottle",
@@ -17,6 +22,8 @@ const CLASS_NAMES = [
   "Monkey"
 ];
 
+// สีประจำคลาส: Bottle=ฟ้า, Dog=ส้ม, Glass Bottle=ม่วง, Goat=เขียว, Monkey=ชมพู
+// ใช้กับเส้นขอบ ป้ายชื่อ ชิป และการ์ดสรุป
 const COLORS = [
   "#43e8ff",
   "#ffad66",
@@ -199,10 +206,13 @@ function nms(detections) {
     let keep = true;
 
     for (const previous of selected) {
-      if (
-        item.classId === previous.classId &&
-        calculateIoU(item, previous) > IOU_THRESHOLD
-      ) {
+      const iou = calculateIoU(item, previous);
+      const limit =
+        item.classId === previous.classId
+          ? IOU_THRESHOLD
+          : CROSS_CLASS_IOU;
+
+      if (iou > limit) {
         keep = false;
         break;
       }
@@ -220,45 +230,40 @@ function nms(detections) {
 // output0: [1, 41, 8400]
 // ======================================
 
+let lastClassMax = new Array(NUM_CLASSES).fill(0);
+
 function decodeOutput(output, meta) {
   const data = output.data;
   const anchors = 8400;
 
   const detections = [];
+  const classMax = new Array(NUM_CLASSES).fill(0);
 
   for (let i = 0; i < anchors; i++) {
-    let bestClass = -1;
-    let bestScore = 0;
+    // เก็บทุกคลาสที่ผ่านเกณฑ์ ไม่ใช่แค่คลาสที่คะแนนสูงสุด
+    // เพื่อให้ตำแหน่งเดียวกันเจอได้ทั้งลิงและขวด
+    const passed = [];
 
     for (let c = 0; c < NUM_CLASSES; c++) {
       const score = data[(4 + c) * anchors + i];
 
-      if (score > bestScore) {
-        bestScore = score;
-        bestClass = c;
-      }
+      if (score > classMax[c]) classMax[c] = score;
+      if (score >= CONFIDENCE) passed.push({ c, score });
     }
 
-    if (bestScore < CONFIDENCE) continue;
+    if (passed.length === 0) continue;
 
     const cx = data[i];
     const cy = data[anchors + i];
     const w = data[2 * anchors + i];
     const h = data[3 * anchors + i];
 
-    const x1 = Math.max(
-      0, (cx - w / 2 - meta.padX) / meta.scale
-    );
-
-    const y1 = Math.max(
-      0, (cy - h / 2 - meta.padY) / meta.scale
-    );
-
+    const x1 = Math.max(0, (cx - w / 2 - meta.padX) / meta.scale);
+    const y1 = Math.max(0, (cy - h / 2 - meta.padY) / meta.scale);
     const x2 = Math.min(
       meta.originalWidth,
       (cx + w / 2 - meta.padX) / meta.scale
     );
-
     const y2 = Math.min(
       meta.originalHeight,
       (cy + h / 2 - meta.padY) / meta.scale
@@ -272,13 +277,17 @@ function decodeOutput(output, meta) {
       coefficients[k] = data[(9 + k) * anchors + i];
     }
 
-    detections.push({
-      classId: bestClass,
-      score: bestScore,
-      x1, y1, x2, y2,
-      coefficients
-    });
+    for (const { c, score } of passed) {
+      detections.push({
+        classId: c,
+        score,
+        x1, y1, x2, y2,
+        coefficients
+      });
+    }
   }
+
+  lastClassMax = classMax;
 
   return nms(detections);
 }
@@ -286,6 +295,7 @@ function decodeOutput(output, meta) {
 // ======================================
 // CREATE SEGMENTATION MASK
 // output1: [1, 32, 160, 160]
+// คืนค่า { canvas, top } เมื่อ top = จุดบนสุดของวัตถุ (ไว้วางป้ายชื่อ)
 // ======================================
 
 function createMask(item, prototypes, meta) {
@@ -301,34 +311,19 @@ function createMask(item, prototypes, meta) {
 
   const left = Math.max(
     0,
-    Math.floor(
-      (item.x1 * meta.scale + meta.padX) /
-      IMAGE_SIZE * size
-    )
+    Math.floor((item.x1 * meta.scale + meta.padX) / IMAGE_SIZE * size)
   );
-
   const top = Math.max(
     0,
-    Math.floor(
-      (item.y1 * meta.scale + meta.padY) /
-      IMAGE_SIZE * size
-    )
+    Math.floor((item.y1 * meta.scale + meta.padY) / IMAGE_SIZE * size)
   );
-
   const right = Math.min(
     size,
-    Math.ceil(
-      (item.x2 * meta.scale + meta.padX) /
-      IMAGE_SIZE * size
-    )
+    Math.ceil((item.x2 * meta.scale + meta.padX) / IMAGE_SIZE * size)
   );
-
   const bottom = Math.min(
     size,
-    Math.ceil(
-      (item.y2 * meta.scale + meta.padY) /
-      IMAGE_SIZE * size
-    )
+    Math.ceil((item.y2 * meta.scale + meta.padY) / IMAGE_SIZE * size)
   );
 
   for (let y = top; y < bottom; y++) {
@@ -338,40 +333,66 @@ function createMask(item, prototypes, meta) {
       let sum = 0;
 
       for (let k = 0; k < NUM_MASKS; k++) {
-        sum +=
-          item.coefficients[k] *
-          prototypes[k * plane + p];
+        sum += item.coefficients[k] * prototypes[k * plane + p];
       }
 
       const probability = 1 / (1 + Math.exp(-sum));
       const index = p * 4;
 
+      // เก็บความน่าจะเป็นไว้ใน alpha (ยังไม่ตัดขาด)
+      // เพื่อให้ขยายภาพแล้วขอบเรียบ ไม่เป็นขั้นบันได
       imageData.data[index] = 255;
       imageData.data[index + 1] = 255;
       imageData.data[index + 2] = 255;
-      imageData.data[index + 3] =
-        probability > 0.5 ? 255 : 0;
+      imageData.data[index + 3] = Math.round(probability * 255);
     }
   }
 
   maskCtx.putImageData(imageData, 0, 0);
 
-  // Resize mask to original image coordinates.
-  const result = document.createElement("canvas");
-  result.width = meta.originalWidth;
-  result.height = meta.originalHeight;
-
-  const rctx = result.getContext("2d");
-
+  // ขยาย 160 -> 640 แบบ smooth แล้วค่อยตัดขาดที่ 0.5
   const resized = document.createElement("canvas");
   resized.width = IMAGE_SIZE;
   resized.height = IMAGE_SIZE;
 
-  resized.getContext("2d").drawImage(
-    maskCanvas, 0, 0, IMAGE_SIZE, IMAGE_SIZE
-  );
+  const rz = resized.getContext("2d", { willReadFrequently: true });
+  rz.imageSmoothingEnabled = true;
+  rz.imageSmoothingQuality = "high";
+  rz.drawImage(maskCanvas, 0, 0, IMAGE_SIZE, IMAGE_SIZE);
 
-  rctx.drawImage(
+  const rd = rz.getImageData(0, 0, IMAGE_SIZE, IMAGE_SIZE);
+  const px = rd.data;
+
+  let topY = -1;
+  let sumX = 0;
+  let count = 0;
+
+  for (let y = 0; y < IMAGE_SIZE; y++) {
+    for (let x = 0; x < IMAGE_SIZE; x++) {
+      const a = (y * IMAGE_SIZE + x) * 4 + 3;
+
+      if (px[a] >= 128) {
+        px[a] = 255;
+
+        if (topY === -1) topY = y;
+        if (y === topY) {
+          sumX += x;
+          count++;
+        }
+      } else {
+        px[a] = 0;
+      }
+    }
+  }
+
+  rz.putImageData(rd, 0, 0);
+
+  // ย้ายกลับไปพิกัดภาพต้นฉบับ
+  const result = document.createElement("canvas");
+  result.width = meta.originalWidth;
+  result.height = meta.originalHeight;
+
+  result.getContext("2d").drawImage(
     resized,
     meta.padX,
     meta.padY,
@@ -383,69 +404,111 @@ function createMask(item, prototypes, meta) {
     meta.originalHeight
   );
 
-  return result;
+  const topPoint =
+    topY >= 0
+      ? {
+          x: (sumX / count - meta.padX) / meta.scale,
+          y: (topY - meta.padY) / meta.scale
+        }
+      : { x: item.x1, y: item.y1 };
+
+  return { canvas: result, top: topPoint };
 }
 
 // ======================================
-// DRAW MASK AND OUTLINE
+// DRAW OUTLINE (เส้นขอบตามตัววัตถุ ไม่มีกรอบสี่เหลี่ยม)
 // ======================================
 
-function drawMask(maskCanvas, color) {
-  const overlay = document.createElement("canvas");
+function tintMask(maskCanvas, color) {
+  const tinted = document.createElement("canvas");
+  tinted.width = maskCanvas.width;
+  tinted.height = maskCanvas.height;
 
-  overlay.width = canvas.width;
-  overlay.height = canvas.height;
+  const t = tinted.getContext("2d");
+  t.drawImage(maskCanvas, 0, 0);
+  t.globalCompositeOperation = "source-in";
+  t.fillStyle = color;
+  t.fillRect(0, 0, tinted.width, tinted.height);
 
-  const octx = overlay.getContext("2d");
-  octx.drawImage(maskCanvas, 0, 0);
+  return tinted;
+}
 
-  const imageData = octx.getImageData(
-    0, 0, overlay.width, overlay.height
+// สร้างเส้นรอบวัตถุ (วงแหวนด้านนอก) หนา thickness พิกเซล
+function makeRing(maskCanvas, color, thickness) {
+  const tinted = tintMask(maskCanvas, color);
+
+  const ring = document.createElement("canvas");
+  ring.width = maskCanvas.width;
+  ring.height = maskCanvas.height;
+
+  const r = ring.getContext("2d");
+  const steps = 24;
+
+  for (let s = 0; s < steps; s++) {
+    const angle = (s / steps) * Math.PI * 2;
+    r.drawImage(
+      tinted,
+      Math.cos(angle) * thickness,
+      Math.sin(angle) * thickness
+    );
+  }
+
+  // เจาะส่วนในออก เหลือแต่เส้นขอบ
+  r.globalCompositeOperation = "destination-out";
+  r.drawImage(maskCanvas, 0, 0);
+
+  return ring;
+}
+
+function drawInstance(mask, color) {
+  const thickness = Math.max(
+    2,
+    Math.round(Math.min(canvas.width, canvas.height) / 220)
   );
 
-  const rgb = color.match(/\w\w/g).map(v => parseInt(v, 16));
-
-  for (let i = 0; i < imageData.data.length; i += 4) {
-    if (imageData.data[i + 3] > 0) {
-      imageData.data[i] = rgb[0];
-      imageData.data[i + 1] = rgb[1];
-      imageData.data[i + 2] = rgb[2];
-      imageData.data[i + 3] = 75;
-    }
+  // สีจางๆ ทับพื้นที่วัตถุ (ถ้าเปิดใช้)
+  if (FILL_ALPHA > 0) {
+    ctx.save();
+    ctx.globalAlpha = FILL_ALPHA;
+    ctx.drawImage(tintMask(mask.canvas, color), 0, 0);
+    ctx.restore();
   }
 
-  octx.putImageData(imageData, 0, 0);
-  ctx.drawImage(overlay, 0, 0);
+  // เงาดำบางๆ ใต้เส้น ให้เห็นชัดบนพื้นหลังสว่าง
+  ctx.save();
+  ctx.globalAlpha = 0.45;
+  ctx.drawImage(makeRing(mask.canvas, "#000", thickness + 1.5), 0, 0);
+  ctx.restore();
 
-  // Draw boundary pixels around the mask.
-  const maskData = maskCanvas.getContext("2d").getImageData(
-    0, 0, canvas.width, canvas.height
-  ).data;
+  // เส้นสีประจำวัตถุชิ้นนี้
+  ctx.drawImage(makeRing(mask.canvas, color, thickness), 0, 0);
+}
+
+function drawLabel(item, point, color) {
+  const label = `${CLASS_NAMES[item.classId]} ${(item.score * 100).toFixed(1)}%`;
+  const fontSize = Math.max(
+    13,
+    Math.min(24, Math.min(canvas.width, canvas.height) / 30)
+  );
+  const padding = Math.round(fontSize * 0.4);
 
   ctx.save();
-  ctx.strokeStyle = color;
-  ctx.lineWidth = Math.max(2, Math.min(canvas.width, canvas.height) / 400);
-  ctx.beginPath();
+  ctx.font = `bold ${fontSize}px Arial`;
+  ctx.textBaseline = "middle";
 
-  for (let y = 1; y < canvas.height - 1; y++) {
-    for (let x = 1; x < canvas.width - 1; x++) {
-      const p = (y * canvas.width + x) * 4;
+  const boxW = ctx.measureText(label).width + padding * 2;
+  const boxH = fontSize + padding * 2;
 
-      if (maskData[p + 3] < 128) continue;
+  const x = Math.min(
+    Math.max(0, point.x - boxW / 2),
+    Math.max(0, canvas.width - boxW)
+  );
+  const y = Math.max(0, point.y - boxH - 8);
 
-      const top = maskData[((y - 1) * canvas.width + x) * 4 + 3] < 128;
-      const bottom = maskData[((y + 1) * canvas.width + x) * 4 + 3] < 128;
-      const left = maskData[(y * canvas.width + x - 1) * 4 + 3] < 128;
-      const right = maskData[(y * canvas.width + x + 1) * 4 + 3] < 128;
-
-      if (top || bottom || left || right) {
-        ctx.fillStyle = color;
-        ctx.fillRect(x, y, 1, 1);
-      }
-    }
-  }
-
-  ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, boxW, boxH);
+  ctx.fillStyle = "#07111f";
+  ctx.fillText(label, x + padding, y + boxH / 2);
   ctx.restore();
 }
 
@@ -461,8 +524,9 @@ function showResults(counts, detections) {
     </div>
   `).join("");
 
+  // ชิปแต่ละอันใช้สีตามคลาส ตรงกับเส้นบนภาพ
   $("detections").innerHTML = detections.map(item => `
-    <span class="det-item">
+    <span class="det-item" style="color:${item.color} !important; border-color:${item.color} !important; background:${item.color}22 !important">
       ${CLASS_NAMES[item.classId]}
       ${(item.score * 100).toFixed(1)}%
     </span>
@@ -508,17 +572,23 @@ async function detectObjects() {
     ctx.drawImage(currentImage, 0, 0);
 
     const counts = [0, 0, 0, 0, 0];
+    const masks = [];
 
-    for (const item of detections) {
+    // วาดเส้นขอบของวัตถุแต่ละชิ้น ใช้สีตามคลาส
+    detections.forEach((item, index) => {
       counts[item.classId]++;
+      item.color = COLORS[item.classId];  // สีตามคลาส
 
-      const mask = createMask(
-        item,
-        output1.data,
-        meta
-      );
+      const mask = createMask(item, output1.data, meta);
+      masks.push(mask);
+      drawInstance(mask, item.color);
+    });
 
-      drawMask(mask, COLORS[item.classId]);
+    // วาดป้ายชื่อไว้บนสุด
+    if (SHOW_LABEL) {
+      detections.forEach((item, index) => {
+        drawLabel(item, masks[index].top, item.color);
+      });
     }
 
     showResults(counts, detections);
@@ -531,6 +601,14 @@ async function detectObjects() {
 
     $("message").textContent +=
       ` | เวลา ${elapsed} วินาที`;
+
+    if (DEBUG) {
+      const summary = CLASS_NAMES
+        .map((n, i) => `${n} ${(lastClassMax[i] * 100).toFixed(0)}%`)
+        .join(" · ");
+      $("message").textContent += ` | คะแนนสูงสุด: ${summary}`;
+      console.log("Max score per class:", summary);
+    }
 
     $("status").textContent = "โมเดลพร้อมใช้งาน";
 
